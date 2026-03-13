@@ -24,7 +24,7 @@ export default function AgentUpgradePanel() {
   const wallet = useWallet();
   const { connection } = useConnection();
   const { setVisible: setModalVisible } = useWalletModal();
-  const [domain, setDomain] = useState("buildonsns.sol");
+  const [domain, setDomain] = useState("");
   const [loading, setLoading] = useState(false);
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [result, setResult] = useState<UpgradeResult | null>(null);
