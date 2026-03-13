@@ -1,4 +1,4 @@
-import { PublicKey, Connection, Transaction } from "@solana/web3.js";
+import { PublicKey, Connection, Transaction, ComputeBudgetProgram } from "@solana/web3.js";
 import { createUmi } from "@metaplex-foundation/umi-bundle-defaults";
 import { create, mplCore } from "@metaplex-foundation/mpl-core";
 import {
@@ -204,15 +204,26 @@ export async function upgradeDomainToAgent(
         );
       }
 
-      const tx = new Transaction().add(...(Array.isArray(ixs) ? ixs : [ixs]));
-      tx.recentBlockhash = (await connection.getLatestBlockhash()).blockhash;
+      const { blockhash, lastValidBlockHeight } =
+        await connection.getLatestBlockhash("confirmed");
+
+      const tx = new Transaction();
+      // Add priority fee to speed up confirmation on mainnet
+      tx.add(
+        ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 50_000 })
+      );
+      tx.add(...(Array.isArray(ixs) ? ixs : [ixs]));
+      tx.recentBlockhash = blockhash;
       tx.feePayer = owner;
 
       snsRecordTxSig = await wallet.sendTransaction(tx, connection, {
         skipPreflight: false,
       });
 
-      await connection.confirmTransaction(snsRecordTxSig, "confirmed");
+      await connection.confirmTransaction(
+        { signature: snsRecordTxSig, blockhash, lastValidBlockHeight },
+        "confirmed"
+      );
     } catch (e: any) {
       throw new Error(`SNS record update failed: ${e.message}`);
     }
