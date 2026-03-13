@@ -11,11 +11,13 @@
   "dependencies": {
     "@bonfida/spl-name-service": "^3.0.19",
     "@metaplex-foundation/mpl-core": "^1.8.0",
+    "@metaplex-foundation/mpl-toolbox": "^0.10.0",
     "@metaplex-foundation/umi": "^1.5.1",
     "@metaplex-foundation/umi-bundle-defaults": "^1.5.1",
     "@metaplex-foundation/umi-signer-wallet-adapters": "^1.5.1",
     "@metaplex-foundation/umi-uploader-irys": "^1.5.0",
     "@metaplex-foundation/umi-web3js-adapters": "^1.5.1",
+    "@solana-agent-kit/plugin-misc": "^2.0.6",
     "@solana/wallet-adapter-base": "^0.9.23",
     "@solana/wallet-adapter-react": "^0.15.35",
     "@solana/wallet-adapter-react-ui": "^0.9.35",
@@ -24,8 +26,7 @@
     "next": "^14.2.0",
     "react": "^18.3.0",
     "react-dom": "^18.3.0",
-    "solana-agent-kit": "^2.0.10",
-    "@solana-agent-kit/plugin-misc": "^2.0.6"
+    "solana-agent-kit": "^2.0.10"
   },
   "devDependencies": {
     "@types/node": "^20.14.0",

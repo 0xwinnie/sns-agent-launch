@@ -4,9 +4,11 @@ import { create, mplCore } from "@metaplex-foundation/mpl-core";
 import {
   generateSigner,
   publicKey as umiPublicKey,
+  transactionBuilder,
   type Umi,
 } from "@metaplex-foundation/umi";
 import { base58 } from "@metaplex-foundation/umi/serializers";
+import { setComputeUnitPrice } from "@metaplex-foundation/mpl-toolbox";
 import { walletAdapterIdentity } from "@metaplex-foundation/umi-signer-wallet-adapters";
 import { irysUploader } from "@metaplex-foundation/umi-uploader-irys";
 import { toWeb3JsPublicKey } from "@metaplex-foundation/umi-web3js-adapters";
@@ -41,33 +43,34 @@ function stripSol(domain: string): string {
   return domain.endsWith(".sol") ? domain.slice(0, -4) : domain;
 }
 
-/**
- * Derive the SNS record V2 account for a custom key.
- *
- * For standard records (Github, Email, etc.) use the Record enum.
- * For our custom "agent_core" key we use Record.TXT as the record type
- * and embed the actual key in the content, because the SNS program
- * only supports enum-based record keys in V2 today.
- *
- * When MIP-014 ships, this will be replaced with a native custom-key API.
- */
 function getRecordType(): Record {
-  // Fallback: use TXT record to store agent_core mapping
-  // Content format: "agent_core=<CoreAssetPubkey>"
   return Record.TXT;
+}
+
+/**
+ * Check if domain already has an agent_core TXT record.
+ * Returns the existing Core Asset pubkey if found, null otherwise.
+ */
+async function getExistingAgent(
+  connection: Connection,
+  domainName: string
+): Promise<string | null> {
+  try {
+    const recordKey = getRecordV2Key(domainName, Record.TXT);
+    const recordInfo = await connection.getAccountInfo(recordKey);
+    if (!recordInfo || !recordInfo.data) return null;
+
+    // Try to read UTF-8 content from the record data
+    const content = Buffer.from(recordInfo.data).toString("utf-8");
+    const match = content.match(/agent_core=([A-Za-z0-9]{32,44})/);
+    return match ? match[1] : null;
+  } catch {
+    return null;
+  }
 }
 
 // ---------- Core Function ----------
 
-/**
- * Upgrade a .sol domain to an on-chain AI Agent identity.
- *
- * Steps:
- * 1. Create Metaplex Core Asset (Agent identity NFT)
- * 2. Upload ERC-8004 JSON metadata via Irys
- * 3. Set SNS Records V2 TXT record with agent_core=<CoreAssetPubkey>
- * 4. Return all signatures + pubkeys for SolanaAgentKit delegation
- */
 export async function upgradeDomainToAgent(
   domain: string,
   wallet: WalletContextState,
@@ -84,7 +87,6 @@ export async function upgradeDomainToAgent(
 
   const { pubkey: domainKey } = getDomainKeySync(domainName);
 
-  // Fetch domain account directly to avoid NameRegistryState parsing issues
   const domainInfo = await connection.getAccountInfo(domainKey);
 
   if (!domainInfo) {
@@ -106,13 +108,24 @@ export async function upgradeDomainToAgent(
     );
   }
 
-  const domainExists = true;
   callbacks?.onStep(
     "validate",
     `Ownership verified: ${domainName}.sol belongs to ${owner.toBase58().slice(0, 6)}...`
   );
 
-  // --- Step 1: Initialize Umi + create Core Asset ---
+  // --- Check if agent already exists ---
+  callbacks?.onStep("check", `Checking for existing agent on ${domainName}.sol`);
+  const existingAgent = await getExistingAgent(connection, domainName);
+  if (existingAgent) {
+    throw new Error(
+      `${domainName}.sol already has an agent.\n` +
+      `Existing Core Asset: ${existingAgent}\n` +
+      `To create a new agent, first remove the existing TXT record.`
+    );
+  }
+  callbacks?.onStep("check", "No existing agent found, proceeding");
+
+  // --- Step 1: Initialize Umi ---
   callbacks?.onStep("umi", "Initializing Umi with wallet");
   const umi: Umi = createUmi(RPC_ENDPOINT, "confirmed")
     .use(walletAdapterIdentity(wallet))
@@ -134,12 +147,11 @@ export async function upgradeDomainToAgent(
   try {
     metadataUri = await umi.uploader.uploadJson(metadata);
   } catch (e: any) {
-    // Irys may need funding — surface a clear message
     throw new Error(`Irys upload failed: ${e.message}. Ensure your wallet has SOL for Irys storage fees.`);
   }
   callbacks?.onStep("metadata", `Metadata uploaded: ${metadataUri}`);
 
-  // --- Step 3: Create Metaplex Core Asset ---
+  // --- Step 3: Create Metaplex Core Asset (with priority fee) ---
   callbacks?.onStep("core-asset", "Creating Metaplex Core Asset (Agent identity)");
   let coreAssetTxSig: string;
   try {
@@ -160,7 +172,10 @@ export async function upgradeDomainToAgent(
       ],
     });
 
-    const result = await builder.sendAndConfirm(umi, {
+    // Prepend priority fee instruction
+    const tx = setComputeUnitPrice(umi, { microLamports: 50_000 }).add(builder);
+
+    const result = await tx.sendAndConfirm(umi, {
       send: { commitment: "confirmed" },
       confirm: { commitment: "confirmed" },
     });
@@ -174,64 +189,57 @@ export async function upgradeDomainToAgent(
   );
 
   // --- Step 4: Set SNS Records V2 (TXT = "agent_core=<pubkey>") ---
+  callbacks?.onStep("sns-record", "Setting SNS Records V2 (agent_core)");
   const recordContent = `agent_core=${coreAssetPubkey.toBase58()}`;
+  const recordType = getRecordType();
   let snsRecordTxSig: string;
 
-  if (!domainExists) {
-    callbacks?.onStep("sns-record", `Skipping SNS record (domain not found). Would set: ${recordContent}`);
-    snsRecordTxSig = "skipped";
-  } else {
-    callbacks?.onStep("sns-record", "Setting SNS Records V2 (agent_core)");
-    const recordType = getRecordType();
-
+  try {
+    let ixs;
     try {
-      let ixs;
-      try {
-        ixs = createRecordV2Instruction(
-          domainName,
-          recordType,
-          recordContent,
-          owner,
-          owner
-        );
-      } catch {
-        ixs = updateRecordV2Instruction(
-          domainName,
-          recordType,
-          recordContent,
-          owner,
-          owner
-        );
-      }
-
-      const { blockhash, lastValidBlockHeight } =
-        await connection.getLatestBlockhash("confirmed");
-
-      const tx = new Transaction();
-      // Add priority fee to speed up confirmation on mainnet
-      tx.add(
-        ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 50_000 })
+      ixs = createRecordV2Instruction(
+        domainName,
+        recordType,
+        recordContent,
+        owner,
+        owner
       );
-      tx.add(...(Array.isArray(ixs) ? ixs : [ixs]));
-      tx.recentBlockhash = blockhash;
-      tx.feePayer = owner;
-
-      snsRecordTxSig = await wallet.sendTransaction(tx, connection, {
-        skipPreflight: false,
-      });
-
-      await connection.confirmTransaction(
-        { signature: snsRecordTxSig, blockhash, lastValidBlockHeight },
-        "confirmed"
+    } catch {
+      ixs = updateRecordV2Instruction(
+        domainName,
+        recordType,
+        recordContent,
+        owner,
+        owner
       );
-    } catch (e: any) {
-      throw new Error(`SNS record update failed: ${e.message}`);
     }
-    callbacks?.onStep(
-      "sns-record",
-      `Record set: TXT → ${recordContent} (tx: ${snsRecordTxSig})`
+
+    const { blockhash, lastValidBlockHeight } =
+      await connection.getLatestBlockhash("confirmed");
+
+    const tx = new Transaction();
+    tx.add(
+      ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 50_000 })
     );
+    tx.add(...(Array.isArray(ixs) ? ixs : [ixs]));
+    tx.recentBlockhash = blockhash;
+    tx.feePayer = owner;
+
+    snsRecordTxSig = await wallet.sendTransaction(tx, connection, {
+      skipPreflight: false,
+    });
+
+    await connection.confirmTransaction(
+      { signature: snsRecordTxSig, blockhash, lastValidBlockHeight },
+      "confirmed"
+    );
+  } catch (e: any) {
+    throw new Error(`SNS record update failed: ${e.message}`);
   }
+  callbacks?.onStep(
+    "sns-record",
+    `Record set: TXT → ${recordContent} (tx: ${snsRecordTxSig})`
+  );
 
   callbacks?.onStep("done", "Domain upgraded to Agent successfully!");
 
