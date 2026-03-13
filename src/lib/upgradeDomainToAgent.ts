@@ -16,7 +16,6 @@ import {
   getRecordV2Key,
   Record,
   getDomainKeySync,
-  NameRegistryState,
 } from "@bonfida/spl-name-service";
 import type { WalletContextState } from "@solana/wallet-adapter-react";
 import { buildAgentMetadata, RPC_ENDPOINT } from "./constants";
@@ -84,30 +83,30 @@ export async function upgradeDomainToAgent(
   callbacks?.onStep("validate", `Validating ownership of ${domainName}.sol`);
 
   const { pubkey: domainKey } = getDomainKeySync(domainName);
-  let domainExists = false;
 
-  try {
-    const { registry } = await NameRegistryState.retrieve(connection, domainKey);
+  // Fetch domain account directly to avoid NameRegistryState parsing issues
+  const domainInfo = await connection.getAccountInfo(domainKey);
 
-    if (!registry.owner.equals(owner)) {
-      throw new Error(
-        `You are not the owner of "${domainName}.sol".\n` +
-        `Domain owner: ${registry.owner.toBase58()}\n` +
-        `Connected wallet: ${owner.toBase58()}`
-      );
-    }
-
-    domainExists = true;
-    callbacks?.onStep(
-      "validate",
-      `Ownership verified: ${domainName}.sol belongs to ${owner.toBase58().slice(0, 6)}...`
-    );
-  } catch (e: any) {
-    // If it's our ownership error, re-throw
-    if (e.message.includes("not the owner")) throw e;
-    // Otherwise domain doesn't exist
+  if (!domainInfo) {
     throw new Error(`Domain "${domainName}.sol" not found on-chain. Make sure it is registered.`);
   }
+
+  // Parse owner from account data: first 32 bytes = parentName, next 32 bytes = owner
+  const domainOwner = new PublicKey(domainInfo.data.slice(32, 64));
+
+  if (!domainOwner.equals(owner)) {
+    throw new Error(
+      `You are not the owner of "${domainName}.sol".\n` +
+      `Domain owner: ${domainOwner.toBase58()}\n` +
+      `Connected wallet: ${owner.toBase58()}`
+    );
+  }
+
+  const domainExists = true;
+  callbacks?.onStep(
+    "validate",
+    `Ownership verified: ${domainName}.sol belongs to ${owner.toBase58().slice(0, 6)}...`
+  );
 
   // --- Step 1: Initialize Umi + create Core Asset ---
   callbacks?.onStep("umi", "Initializing Umi with wallet");
