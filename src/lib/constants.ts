@@ -8,9 +8,9 @@ export const NAME_PROGRAM_ID = new PublicKey(
 // SNS Records V2 custom key for Agent Core Asset
 export const AGENT_CORE_RECORD_KEY = "agent_core";
 
-// Solana RPC (devnet for testing, switch to mainnet for prod)
+// Solana RPC — override with NEXT_PUBLIC_RPC_URL env var
 export const RPC_ENDPOINT =
-  process.env.NEXT_PUBLIC_RPC_URL || "https://api.devnet.solana.com";
+  process.env.NEXT_PUBLIC_RPC_URL || "https://mainnet.helius-rpc.com/?api-key=dfa9dcc7-65b2-4767-94a7-b84d4a087609";
 
 // Metaplex Core Asset metadata schema (ERC-8004 inspired)
 export interface AgentMetadata {
