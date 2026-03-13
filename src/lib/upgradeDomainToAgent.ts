@@ -88,7 +88,11 @@ export async function upgradeDomainToAgent(
   const domainInfo = await connection.getAccountInfo(domainKey);
 
   if (!domainInfo) {
-    throw new Error(`Domain "${domainName}.sol" not found on-chain. Make sure it is registered.`);
+    throw new Error(
+      `Domain "${domainName}.sol" not found on-chain.\n` +
+      `Derived key: ${domainKey.toBase58()}\n` +
+      `RPC: ${connection.rpcEndpoint.replace(/api-key=.*/, "api-key=***")}`
+    );
   }
 
   // Parse owner from account data: first 32 bytes = parentName, next 32 bytes = owner
